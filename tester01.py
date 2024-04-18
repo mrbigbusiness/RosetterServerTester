@@ -12,6 +12,8 @@ random.seed()
 parser = argparse.ArgumentParser(description='Test record similarity API',formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument('-e','--explain', required=False, action='store_true', default=False, \
                     help='Include explanation data (very verbose!)')
+parser.add_argument('-s','--start', required=False, type=int, default=-1, \
+                    help='Record number to start with, to repeat data queries.')
 parser.add_argument('-c','--recordcount', required=True, type=int, default=1, \
                     help='How many records to submit and compare at once')
 parser.add_argument('-f','--fields',required=True,nargs='*', \
@@ -21,7 +23,7 @@ Which data field(s) to compare.  Otions include:
 	include mulitples by using "-f name company dob" for example.'''))
 	
 parser.add_argument('-n','--namemangle', choices=['none','drop-middle','init-first','init-firstmiddle','typo','random'], \
-                    default='none', required=True, help=textwrap.dedent('''\
+                    default='none', required=False, help=textwrap.dedent('''\
 How to mangle the name.  Choices are:
 	none - self explanatory, and the default
 	drop-middle - Use only first and last name
@@ -31,7 +33,7 @@ How to mangle the name.  Choices are:
 	random - a random choice of the others'''))
 
 parser.add_argument('-a','--addressmangle', choices=['none','drop-street','drop-city','null','typo','random'], \
-                    default='none', required=True, help=textwrap.dedent('''\
+                    default='none', required=False, help=textwrap.dedent('''\
 How to mangle the address.  Choices are:
 	none - self explanatory, and the default
 	drop-street - Remove the street line from the address
@@ -41,14 +43,14 @@ How to mangle the address.  Choices are:
 	random - a random choice of the others'''))
 	
 parser.add_argument('-x','--companymangle', choices=['none','null','typo'], \
-                    default='none', required=True, help=textwrap.dedent('''\
+                    default='none', required=False, help=textwrap.dedent('''\
 How to mangle the company name.  Choices are:
 	none - self explanatory, and the default
 	null - return nothing - a blank company name
 	typo - Remove a random letter from the city name'''))
 
 parser.add_argument('-d','--DOBmangle', choices=['none','usa','eu','year','human','wrong'], \
-                    default='none', required=True, help=textwrap.dedent('''\
+                    default='none', required=False, help=textwrap.dedent('''\
 How to mangle the date of birth.  Choices are:
 	none - self explanatory, and the default
 	usa - month/day/year format like real americans
@@ -129,6 +131,107 @@ def mangleName(givenName):
 		remove = random.randint(1,len(lastname))
 		lastname = lastname[0:remove]+lastname[remove+1:]
 		return givenName['firstname']+' '+givenName['middlename']+' '+lastname
+	else:					## do nothing, return the name unmolested
+		return givenName['firstname']+' '+givenName['middlename']+' '+givenName['lastname']
+
+def mangleCompany(givenName):
+	choice = args.companymangle
+	print (choice)
+	if choice == 'null':  		## return a blank entry
+		return ''
+	elif choice == 'typo': 		## remove a random letter from the last name
+		remove = random.randint(1,len(givenName))
+		companyname = givenName[0:remove]+givenName[remove+1:]
+		return companyname
+	else:					## do nothing, return the name unmolested
+		return givenName
+
+def mangleAddress(address):
+	choices=['none','drop-street','drop-city','null','typo']
+	if args.addressmangle == 'random':
+		choice = random.choice(choices)
+	else:		
+		choice = args.addressmangle
+	if choice == 'drop-street':  		## drop the street
+		return address['city']+', '+address['state']+', '+address['zip']
+	elif choice == 'drop-city':  		## drop the city
+		return address['street']+', '+address['state']+', '+address['zip']
+	elif choice == 'null':		## return null
+		return ''
+	elif choice == 'typo': 		## remove a random letter from the city
+		city = address['city']
+		remove = random.randint(1,len(city))
+		city = city[0:remove]+city[remove+1:]
+		return address['street']+', '+city+', '+address['state']+', '+address['zip']
+	else:					## do nothing, return the address unmolested
+		return address['street']+', '+address['city']+', '+address['state']+', '+address['zip']
+
+
+#explainTF = args.explain
+payload = {"fields": {"fullname": {"type": "rni_name", "weight": 0.5}, \
+		"address": {"type": "rni_address", "weight": 0.5}, \
+		"dob": {"type": "rni_date", "weight": 0.4}, \
+		"company": {'type':'rni_name', 'weight':0.1}},\
+		"properties": {"threshold": 0.7, "includeExplainInfo": args.explain}, "records": {}}
+
+left = []
+right = []
+counter = 0
+itemCount = len(data)
+if args.start < 0:
+	itemNumber = random.randint(0,itemCount-2)
+else:
+	itemNumber = args.start
+itemStart = itemNumber
+while counter < args.recordcount:
+	item = data[itemNumber]
+	itemNumber = itemNumber+1
+	if itemNumber == itemCount:
+		itemNumber = 0
+	counter=counter+1
+	if (counter > args.recordcount):  ### only pull the first N records
+		break
+	fullname1 = item['firstname']+' '+item['middlename']+' '+item['lastname']
+	address1 = item['street']+', '+item['city']+', '+item['state']+', '+str(item['zip'])
+	company1 = item['company']
+	birthdate1 = item['birthdate']
+	#print(fullname1, address1)	
+	left.append({'fullname':{'text':fullname1,'entityType':'PERSON','language':'eng'}, \
+				 'address':address1, 'company':{'text':company1, 'entityType':'ORGANIZATION'},\
+				 'dob':{'date':birthdate1}})
+	#left.append(thisData)
+	
+	thisData = {}
+	if 'name' in args.fields:
+		fullname2 = mangleName({'firstname':item['firstname'],'middlename':item['middlename'],'lastname':item['lastname']})
+		thisData['fullname'] = {'text':fullname2,'entityType':'PERSON','language':'eng'}
+	if 'company' in args.fields:
+		company2 = mangleCompany(item['company'])
+		thisData['company'] = {'text':company2,'entityType':'ORGANIZATION'}
+	if 'address' in args.fields:	
+		address2 = mangleAddress({'street':item['street'],'city':item['city'],'state':item['state'],'zip':str(item['zip'])})
+		thisData['address'] = address2
+	if 'dob' in args.fields:
+		birthdate2 = mangleDOB(item['birthdate'])
+		thisData['dob'] = {'date':birthdate2}	
+	
+	# right.append({'fullname':{'text':fullname2,'entityType':'PERSON','language':'eng'}, \
+				# 'address':address2, 'company':{'text':company2, 'entityType':'ORGANIZATION'},\
+				# 'dob':{'date':birthdate2}})
+	right.append(thisData)				
+		
+
+payload['records'] = {'left':left,'right':right}
+print(json.dumps(payload, indent=2))
+print()
+print('Performing Query')
+print()
+startTime=time.time()
+response = requests.post(url, headers=headers, json=payload)
+elapsed = time.time()-startTime
+print(json.dumps(json.loads(response.text), indent=2))
+print('This query took '+str(elapsed)+' seconds.')
+print('Started at record '+str(itemStart))
 	else:					## do nothing, return the name unmolested
 		return givenName['firstname']+' '+givenName['middlename']+' '+givenName['lastname']
 
